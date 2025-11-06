@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"database/sql"
 	"net/http"
 
 	"github.com/c.mueller/auto-cluster-sync-demo/internal/database"
@@ -10,18 +9,53 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 )
 
+// Cluster interface for broadcasting events
+type Cluster interface {
+	BroadcastTodoCreated(todo *models.Todo) error
+	BroadcastTodoUpdated(todo *models.Todo) error
+	BroadcastTodoDeleted(externID string) error
+	IsReady() bool
+	LocalNode() string
+	MemberCount() int
+	GetMemberInfo() []models.ClusterMemberInfo
+}
+
 // Server holds the API server dependencies
 type Server struct {
-	db *database.DB
+	db      *database.DB
+	cluster Cluster
 }
 
 // NewServer creates a new API server
-func NewServer(db *database.DB) *Server {
-	return &Server{db: db}
+func NewServer(db *database.DB, cluster Cluster) *Server {
+	return &Server{
+		db:      db,
+		cluster: cluster,
+	}
 }
 
 // RegisterRoutes registers all API routes with the Huma API
 func (s *Server) RegisterRoutes(api huma.API) {
+	// GET /health/ready - Health check
+	huma.Register(api, huma.Operation{
+		OperationID: "health-ready",
+		Method:      http.MethodGet,
+		Path:        "/health/ready",
+		Summary:     "Readiness check",
+		Description: "Check if the node is ready to serve requests (fully synced)",
+		Tags:        []string{"health"},
+	}, s.healthReady)
+
+	// GET /health/info - Cluster info
+	huma.Register(api, huma.Operation{
+		OperationID: "health-info",
+		Method:      http.MethodGet,
+		Path:        "/health/info",
+		Summary:     "Cluster information",
+		Description: "Get information about the cluster status and members",
+		Tags:        []string{"health"},
+	}, s.healthInfo)
+
 	// GET /todos - List all todos
 	huma.Register(api, huma.Operation{
 		OperationID: "list-todos",
@@ -138,9 +172,18 @@ func (s *Server) getTodo(ctx context.Context, input *GetTodoRequest) (*GetTodoRe
 }
 
 func (s *Server) createTodo(ctx context.Context, input *CreateTodoRequest) (*CreateTodoResponse, error) {
-	todo, err := s.db.CreateTodo(input.Body.Todo)
+	todo, err := s.db.CreateTodo(input.Body.ExternID, input.Body.Todo)
 	if err != nil {
 		return nil, huma.Error500InternalServerError("Failed to create todo", err)
+	}
+
+	// Broadcast to cluster (if cluster is enabled)
+	if s.cluster != nil {
+		if err := s.cluster.BroadcastTodoCreated(todo); err != nil {
+			// Log error but don't fail the request
+			// Todo is already created locally
+			// Cluster sync will retry later
+		}
 	}
 
 	return &CreateTodoResponse{Body: *todo}, nil
@@ -156,17 +199,108 @@ func (s *Server) updateTodo(ctx context.Context, input *UpdateTodoRequest) (*Upd
 		return nil, huma.Error404NotFound("Todo not found")
 	}
 
+	// Broadcast to cluster (if cluster is enabled)
+	if s.cluster != nil {
+		if err := s.cluster.BroadcastTodoUpdated(todo); err != nil {
+			// Log error but don't fail the request
+		}
+	}
+
 	return &UpdateTodoResponse{Body: *todo}, nil
 }
 
 func (s *Server) deleteTodo(ctx context.Context, input *DeleteTodoRequest) (*struct{}, error) {
-	err := s.db.DeleteTodo(input.ID)
-	if err == sql.ErrNoRows {
+	// Get todo first to get extern_id for cluster broadcast
+	todo, err := s.db.GetTodo(input.ID)
+	if err != nil {
+		return nil, huma.Error500InternalServerError("Failed to get todo", err)
+	}
+	if todo == nil {
 		return nil, huma.Error404NotFound("Todo not found")
 	}
+
+	// Delete from database
+	err = s.db.DeleteTodo(input.ID)
 	if err != nil {
 		return nil, huma.Error500InternalServerError("Failed to delete todo", err)
 	}
 
+	// Broadcast to cluster (if cluster is enabled)
+	if s.cluster != nil {
+		if err := s.cluster.BroadcastTodoDeleted(todo.ExternID); err != nil {
+			// Log error but don't fail the request
+		}
+	}
+
 	return nil, nil
+}
+
+type HealthReadyResponse struct {
+	Body struct {
+		Ready   bool   `json:"ready" doc:"Whether the node is ready to serve requests"`
+		Message string `json:"message,omitempty" doc:"Optional status message"`
+	}
+}
+
+func (s *Server) healthReady(ctx context.Context, input *struct{}) (*HealthReadyResponse, error) {
+	resp := &HealthReadyResponse{}
+
+	if s.cluster == nil {
+		// No cluster, always ready
+		resp.Body.Ready = true
+		resp.Body.Message = "Running in standalone mode"
+		return resp, nil
+	}
+
+	if s.cluster.IsReady() {
+		resp.Body.Ready = true
+		resp.Body.Message = "Node is ready"
+		return resp, nil
+	}
+
+	// Not ready yet (still syncing)
+	resp.Body.Ready = false
+	resp.Body.Message = "Node is syncing, not ready yet"
+	return resp, huma.Error503ServiceUnavailable("Node is syncing, not ready yet")
+}
+
+type HealthInfoResponse struct {
+	Body struct {
+		NodeName     string                      `json:"node_name" doc:"Name of this node"`
+		Ready        bool                        `json:"ready" doc:"Whether the node is ready to serve requests"`
+		ClusterMode  bool                        `json:"cluster_mode" doc:"Whether clustering is enabled"`
+		MemberCount  int                         `json:"member_count" doc:"Number of cluster members"`
+		Members      []models.ClusterMemberInfo  `json:"members,omitempty" doc:"List of cluster members"`
+		TodoCount    int                         `json:"todo_count" doc:"Number of todos in local database"`
+	}
+}
+
+func (s *Server) healthInfo(ctx context.Context, input *struct{}) (*HealthInfoResponse, error) {
+	resp := &HealthInfoResponse{}
+
+	// Get todo count from database
+	todoCount, err := s.db.CountTodos()
+	if err != nil {
+		todoCount = -1 // Indicate error
+	}
+	resp.Body.TodoCount = todoCount
+
+	if s.cluster == nil {
+		// Standalone mode
+		resp.Body.NodeName = "standalone"
+		resp.Body.Ready = true
+		resp.Body.ClusterMode = false
+		resp.Body.MemberCount = 1
+		resp.Body.Members = nil
+		return resp, nil
+	}
+
+	// Cluster mode
+	resp.Body.NodeName = s.cluster.LocalNode()
+	resp.Body.Ready = s.cluster.IsReady()
+	resp.Body.ClusterMode = true
+	resp.Body.MemberCount = s.cluster.MemberCount()
+	resp.Body.Members = s.cluster.GetMemberInfo()
+
+	return resp, nil
 }

@@ -38,6 +38,7 @@ func (db *DB) initSchema() error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS todos (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		extern_id TEXT NOT NULL,
 		todo TEXT NOT NULL,
 		completed BOOLEAN NOT NULL DEFAULT 0,
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -45,6 +46,7 @@ func (db *DB) initSchema() error {
 
 	CREATE INDEX IF NOT EXISTS idx_todos_created_at ON todos(created_at);
 	CREATE INDEX IF NOT EXISTS idx_todos_completed ON todos(completed);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_todos_extern_id ON todos(extern_id);
 	`
 
 	_, err := db.conn.Exec(schema)
@@ -57,10 +59,10 @@ func (db *DB) Close() error {
 }
 
 // CreateTodo creates a new todo item
-func (db *DB) CreateTodo(todo string) (*models.Todo, error) {
+func (db *DB) CreateTodo(externID, todo string) (*models.Todo, error) {
 	result, err := db.conn.Exec(
-		"INSERT INTO todos (todo, completed, created_at) VALUES (?, ?, ?)",
-		todo, false, time.Now(),
+		"INSERT INTO todos (extern_id, todo, completed, created_at) VALUES (?, ?, ?, ?)",
+		externID, todo, false, time.Now(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create todo: %w", err)
@@ -78,9 +80,9 @@ func (db *DB) CreateTodo(todo string) (*models.Todo, error) {
 func (db *DB) GetTodo(id int) (*models.Todo, error) {
 	var todo models.Todo
 	err := db.conn.QueryRow(
-		"SELECT id, todo, completed, created_at FROM todos WHERE id = ?",
+		"SELECT id, extern_id, todo, completed, created_at FROM todos WHERE id = ?",
 		id,
-	).Scan(&todo.ID, &todo.Todo, &todo.Completed, &todo.CreatedAt)
+	).Scan(&todo.ID, &todo.ExternID, &todo.Todo, &todo.Completed, &todo.CreatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -95,7 +97,7 @@ func (db *DB) GetTodo(id int) (*models.Todo, error) {
 // ListTodos retrieves all todos
 func (db *DB) ListTodos() ([]models.Todo, error) {
 	rows, err := db.conn.Query(
-		"SELECT id, todo, completed, created_at FROM todos ORDER BY created_at DESC",
+		"SELECT id, extern_id, todo, completed, created_at FROM todos ORDER BY created_at DESC",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list todos: %w", err)
@@ -105,7 +107,7 @@ func (db *DB) ListTodos() ([]models.Todo, error) {
 	var todos []models.Todo
 	for rows.Next() {
 		var todo models.Todo
-		if err := rows.Scan(&todo.ID, &todo.Todo, &todo.Completed, &todo.CreatedAt); err != nil {
+		if err := rows.Scan(&todo.ID, &todo.ExternID, &todo.Todo, &todo.Completed, &todo.CreatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan todo: %w", err)
 		}
 		todos = append(todos, todo)
@@ -180,4 +182,32 @@ func (db *DB) DeleteTodo(id int) error {
 	}
 
 	return nil
+}
+
+// GetTodoByExternID retrieves a todo by external ID
+func (db *DB) GetTodoByExternID(externID string) (*models.Todo, error) {
+	var todo models.Todo
+	err := db.conn.QueryRow(
+		"SELECT id, extern_id, todo, completed, created_at FROM todos WHERE extern_id = ?",
+		externID,
+	).Scan(&todo.ID, &todo.ExternID, &todo.Todo, &todo.Completed, &todo.CreatedAt)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get todo by extern_id: %w", err)
+	}
+
+	return &todo, nil
+}
+
+// CountTodos returns the total number of todos
+func (db *DB) CountTodos() (int, error) {
+	var count int
+	err := db.conn.QueryRow("SELECT COUNT(*) FROM todos").Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count todos: %w", err)
+	}
+	return count, nil
 }
