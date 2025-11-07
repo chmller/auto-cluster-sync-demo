@@ -1,3 +1,4 @@
 .idea
 auto-cluster-sync
 *.db
+configs
