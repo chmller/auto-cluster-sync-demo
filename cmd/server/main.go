@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"log"
@@ -32,6 +34,15 @@ func (w *slogWriter) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
+// generateEncryptionKey generates a 32-byte encryption key for Serf
+func generateEncryptionKey() (string, error) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return "", fmt.Errorf("failed to generate random key: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(key), nil
+}
+
 func main() {
 	// Command line flags
 	configFlag := flag.String("config", "", "Path to configuration file (YAML)")
@@ -39,7 +50,35 @@ func main() {
 	dbPathFlag := flag.String("db", "", "Database file path (overrides config)")
 	nodeNameFlag := flag.String("node-name", "", "Node name (overrides config)")
 	serfAddrFlag := flag.String("serf-addr", "", "Serf bind address (overrides config)")
+	keygenFlag := flag.Bool("keygen", false, "Generate encryption key for Serf cluster and exit")
 	flag.Parse()
+
+	// Handle keygen mode
+	if *keygenFlag {
+		key, err := generateEncryptionKey()
+		if err != nil {
+			log.Fatalf("Failed to generate encryption key: %v", err)
+		}
+
+		fmt.Println("==============================================")
+		fmt.Println("Generated Serf Encryption Key:")
+		fmt.Println(key)
+		fmt.Println("==============================================")
+		fmt.Println("")
+		fmt.Println("IMPORTANT: Add this key to the 'encrypt_key' field")
+		fmt.Println("in the configuration file of EVERY node in your cluster.")
+		fmt.Println("")
+		fmt.Println("Example YAML configuration:")
+		fmt.Println("")
+		fmt.Println("  cluster:")
+		fmt.Println("    encrypt_key: \"" + key + "\"")
+		fmt.Println("    seeds:")
+		fmt.Println("      - \"127.0.0.1:7946\"")
+		fmt.Println("")
+		fmt.Println("All nodes must use the SAME key to communicate securely.")
+		fmt.Println("==============================================")
+		os.Exit(0)
+	}
 
 	var cfg *config.Config
 	var err error

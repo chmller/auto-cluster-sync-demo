@@ -147,6 +147,22 @@ CREATE UNIQUE INDEX idx_todos_extern_id ON todos(extern_id);
 go build -o auto-cluster-sync ./cmd/server
 ```
 
+### Generating Encryption Keys
+
+For production deployments with Serf encryption enabled:
+
+```bash
+# Generate a new encryption key
+go run ./cmd/server -keygen
+
+# Or using the built binary
+./auto-cluster-sync -keygen
+```
+
+This generates a cryptographically secure 32-byte (256-bit) encryption key encoded in base64. The command displays the key with usage instructions and exits immediately.
+
+**Important:** All nodes in the cluster must use the same encryption key. Add the generated key to the `cluster.encrypt_key` field in your YAML configuration file.
+
 ### Running
 
 **Single Node (no clustering):**
@@ -229,6 +245,7 @@ The application supports YAML config files and command line flags.
 - `-db` - Path to SQLite database file (overrides config)
 - `-node-name` - Node name for cluster (overrides config)
 - `-serf-addr` - Serf bind address (overrides config)
+- `-keygen` - Generate encryption key for Serf cluster and exit
 
 **YAML Configuration Format:**
 ```yaml
@@ -370,6 +387,8 @@ Interactive OpenAPI documentation is automatically generated at `/docs`
 
 **Security:**
 - Add Serf encryption via `encrypt_key` in config for production
+  - Use `./auto-cluster-sync -keygen` to generate a secure encryption key
+  - All cluster nodes must use the same encryption key
 - Use TLS for HTTP API endpoints
 - Validate and sanitize `extern_id` input
 

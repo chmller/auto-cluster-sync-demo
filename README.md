@@ -142,6 +142,7 @@ cluster:
 - `-db` - Database file path (overrides config, default: `./todos.db`)
 - `-node-name` - Node name (overrides config)
 - `-serf-addr` - Serf bind address (overrides config)
+- `-keygen` - Generate encryption key for Serf cluster and exit
 
 **Note:** Command line flags take precedence over config file values.
 
@@ -189,6 +190,19 @@ The SQLite database contains a single `todos` table:
 ## Clustering
 
 The application supports clustering using Hashicorp Serf for service discovery and todo synchronization.
+
+### Generating Encryption Keys (Optional)
+
+For production deployments, you can enable Serf encryption by generating a secure encryption key:
+
+```bash
+# Generate a new encryption key
+./auto-cluster-sync -keygen
+```
+
+This command generates a cryptographically secure 32-byte (256-bit) encryption key and displays it with usage instructions. Add the generated key to the `cluster.encrypt_key` field in your configuration file.
+
+**Important:** All nodes in the cluster must use the same encryption key to communicate securely.
 
 ### Running a Cluster
 
@@ -248,6 +262,6 @@ curl http://localhost:8082/todos  # Node 3
 - [x] Health check endpoints (`/health/ready`, `/health/info`)
 - [x] Configurable log levels
 - [x] YAML configuration support
+- [x] Serf encryption key generation tool
 - [ ] Metrics and monitoring (Prometheus)
 - [ ] TLS support for HTTP API
-- [ ] Serf encryption for production
