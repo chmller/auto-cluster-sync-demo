@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,20 +18,11 @@ import (
 	"github.com/c.mueller/auto-cluster-sync-demo/internal/cluster"
 	"github.com/c.mueller/auto-cluster-sync-demo/internal/config"
 	"github.com/c.mueller/auto-cluster-sync-demo/internal/database"
+	"github.com/c.mueller/auto-cluster-sync-demo/internal/worker"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
 )
-
-// slogWriter adapts slog to io.Writer interface for standard log package
-type slogWriter struct {
-	logger *slog.Logger
-}
-
-func (w *slogWriter) Write(p []byte) (n int, err error) {
-	w.logger.Info(string(p))
-	return len(p), nil
-}
 
 // generateEncryptionKey generates a 32-byte encryption key for Serf
 func generateEncryptionKey() (string, error) {
@@ -85,10 +75,10 @@ func main() {
 
 	// Load config file if provided
 	if *configFlag != "" {
-		log.Printf("Loading configuration from %s", *configFlag)
+		log.Printf("[INFO] Loading configuration from %s", *configFlag)
 		cfg, err = config.LoadConfig(*configFlag)
 		if err != nil {
-			log.Fatalf("Failed to load config: %v", err)
+			log.Fatalf("[ERROR] Failed to load config: %v", err)
 		}
 	} else {
 		// Use defaults
@@ -130,38 +120,39 @@ func main() {
 		cfg.Node.Serf.BindAddr = *serfAddrFlag
 	}
 
-	// Setup logger with configured level
-	logLevel := config.ParseLogLevel(cfg.LogLevel)
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: logLevel,
-	}))
-	slog.SetDefault(logger)
-	log.SetFlags(0)
-	log.SetOutput(&slogWriter{logger: logger})
+	// Setup logger with standard format (matching Serf's format)
+	log.SetFlags(log.LstdFlags)
+	log.SetOutput(os.Stdout)
 
-	slog.Info("Starting auto-cluster-sync", "log_level", cfg.LogLevel, "node", cfg.Node.Name)
+	log.Printf("[INFO] Starting auto-cluster-sync (log_level=%s, node=%s)", cfg.LogLevel, cfg.Node.Name)
 
 	// Initialize database
-	log.Printf("Initializing database at %s", cfg.Node.Database.Path)
+	log.Printf("[INFO] Initializing database at %s", cfg.Node.Database.Path)
 	db, err := database.New(cfg.Node.Database.Path)
 	if err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
+		log.Fatalf("[ERROR] Failed to initialize database: %v", err)
 	}
 	defer db.Close()
 
 	// Initialize cluster
-	log.Printf("Initializing cluster (node: %s, serf: %s)", cfg.Node.Name, cfg.Node.Serf.BindAddr)
+	log.Printf("[INFO] Initializing cluster (node: %s, serf: %s)", cfg.Node.Name, cfg.Node.Serf.BindAddr)
 	clusterInstance, err := cluster.New(cfg.Node.Name, cfg.Node.Serf.BindAddr, db)
 	if err != nil {
-		log.Fatalf("Failed to initialize cluster: %v", err)
+		log.Fatalf("[ERROR] Failed to initialize cluster: %v", err)
 	}
 	defer clusterInstance.Stop()
 
 	// Start cluster
 	joinTimeout := time.Duration(cfg.Cluster.JoinTimeout) * time.Second
 	if err := clusterInstance.Start(cfg.Cluster.Seeds, joinTimeout); err != nil {
-		log.Fatalf("Failed to start cluster: %v", err)
+		log.Fatalf("[ERROR] Failed to start cluster: %v", err)
 	}
+
+	// Initialize and start worker
+	log.Printf("[INFO] Initializing background worker...")
+	workerInstance := worker.New(db, clusterInstance, cfg.Node.Name)
+	workerInstance.Start()
+	defer workerInstance.Stop()
 
 	// Create Chi router
 	router := chi.NewMux()
@@ -184,10 +175,10 @@ func main() {
 
 	// Start server in a goroutine
 	go func() {
-		log.Printf("Starting HTTP server on port %d", cfg.Node.HTTP.Port)
-		log.Printf("API documentation available at http://localhost:%d/docs", cfg.Node.HTTP.Port)
+		log.Printf("[INFO] Starting HTTP server on port %d", cfg.Node.HTTP.Port)
+		log.Printf("[INFO] API documentation available at http://localhost:%d/docs", cfg.Node.HTTP.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed: %v", err)
+			log.Fatalf("[ERROR] Server failed: %v", err)
 		}
 	}()
 
@@ -196,20 +187,23 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("Shutting down server...")
+	log.Printf("[INFO] Shutting down server...")
 
-	// Gracefully shutdown cluster first
+	// Gracefully shutdown worker first
+	workerInstance.Stop()
+
+	// Then shutdown cluster
 	if err := clusterInstance.Stop(); err != nil {
-		log.Printf("Error stopping cluster: %v", err)
+		log.Printf("[ERROR] Error stopping cluster: %v", err)
 	}
 
-	// Then shutdown HTTP server
+	// Finally shutdown HTTP server
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+		log.Fatalf("[ERROR] Server forced to shutdown: %v", err)
 	}
 
-	log.Println("Server exited")
+	log.Printf("[INFO] Server exited")
 }

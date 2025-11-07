@@ -76,7 +76,7 @@ func (c *Cluster) Start(seeds []string, joinTimeout time.Duration) error {
 
 	// Join cluster via seeds
 	if len(seeds) > 0 {
-		log.Printf("🔍 Attempting to join cluster via seeds: %v", seeds)
+		log.Printf("[INFO] Attempting to join cluster via seeds: %v", seeds)
 
 		// Retry logic
 		maxRetries := 3
@@ -86,19 +86,19 @@ func (c *Cluster) Start(seeds []string, joinTimeout time.Duration) error {
 		for i := 0; i < maxRetries; i++ {
 			if i > 0 {
 				backoff := time.Duration(i) * 2 * time.Second
-				log.Printf("⏳ Retry %d/%d in %v...", i+1, maxRetries, backoff)
+				log.Printf("[INFO] Retry %d/%d in %v...", i+1, maxRetries, backoff)
 				time.Sleep(backoff)
 			}
 
 			numJoined, err := c.serf.Join(seeds, true)
 			if err != nil {
 				lastErr = err
-				log.Printf("⚠️  Join attempt %d failed: %v", i+1, err)
+				log.Printf("[WARN] Join attempt %d failed: %v", i+1, err)
 				continue
 			}
 
 			if numJoined > 0 {
-				log.Printf("✅ Successfully joined %d nodes", numJoined)
+				log.Printf("[INFO] Successfully joined %d nodes", numJoined)
 				joined = true
 				break
 			}
@@ -106,32 +106,32 @@ func (c *Cluster) Start(seeds []string, joinTimeout time.Duration) error {
 
 		// If we couldn't join but didn't error, we might be the first node
 		if !joined && lastErr == nil {
-			log.Println("ℹ️  No seeds responded, starting as first node")
+			log.Printf("[INFO] No seeds responded, starting as first node")
 			c.markReady()
 			return nil
 		}
 
 		if !joined {
-			log.Printf("⚠️  Failed to join after %d attempts: %v", maxRetries, lastErr)
-			log.Println("ℹ️  Continuing as standalone node")
+			log.Printf("[WARN] Failed to join after %d attempts: %v", maxRetries, lastErr)
+			log.Printf("[INFO] Continuing as standalone node")
 			c.markReady()
 			return nil
 		}
 
 		// Wait for full sync to complete (with timeout)
-		log.Println("⏳ Waiting for full sync to complete...")
+		log.Printf("[INFO] Waiting for full sync to complete...")
 		syncTimeout := 30 * time.Second
 		select {
 		case <-c.readyCh:
-			log.Println("✅ Node is ready")
+			log.Printf("[INFO] Node is ready")
 			return nil
 		case <-time.After(syncTimeout):
-			log.Printf("⚠️  Full sync timeout after %v, continuing anyway", syncTimeout)
+			log.Printf("[WARN] Full sync timeout after %v, continuing anyway", syncTimeout)
 			c.markReady()
 			return nil
 		}
 	} else {
-		log.Println("ℹ️  No seeds configured, starting as first node")
+		log.Printf("[INFO] No seeds configured, starting as first node")
 		c.markReady()
 	}
 
@@ -146,14 +146,14 @@ func (c *Cluster) Stop() error {
 	}
 	c.stopped = true
 
-	log.Println("🛑 Shutting down cluster...")
+	log.Printf("[INFO] Shutting down cluster...")
 
 	// Signal shutdown to event handler
 	close(c.shutdown)
 
 	// Leave the cluster gracefully
 	if err := c.serf.Leave(); err != nil {
-		log.Printf("⚠️  Error leaving cluster: %v", err)
+		log.Printf("[WARN] Error leaving cluster: %v", err)
 	}
 
 	// Shutdown Serf
@@ -161,7 +161,7 @@ func (c *Cluster) Stop() error {
 		return fmt.Errorf("failed to shutdown serf: %w", err)
 	}
 
-	log.Println("✅ Cluster shutdown complete")
+	log.Printf("[INFO] Cluster shutdown complete")
 	return nil
 }
 

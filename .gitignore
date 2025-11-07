@@ -2,3 +2,7 @@
 auto-cluster-sync
 *.db
 configs
+*.db-shm
+*.db-wal
+load-test
+check-nodes

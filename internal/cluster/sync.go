@@ -61,6 +61,93 @@ func (c *Cluster) broadcastEvent(eventName string, event TodoSyncEvent) error {
 		return fmt.Errorf("failed to broadcast event: %w", err)
 	}
 
-	log.Printf("📤 Broadcasted %s: %s", eventName, event.ExternID)
+	log.Printf("[INFO] Broadcasted %s: %s", eventName, event.ExternID)
 	return nil
+}
+
+// broadcastJobEvent sends a job event to the cluster
+func (c *Cluster) broadcastJobEvent(eventName string, event JobEvent) error {
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("failed to marshal job event: %w", err)
+	}
+
+	err = c.serf.UserEvent(eventName, payload, false)
+	if err != nil {
+		return fmt.Errorf("failed to broadcast job event: %w", err)
+	}
+
+	log.Printf("[INFO] Broadcasted %s: %s (node: %s)", eventName, event.ExternID, event.NodeID)
+	return nil
+}
+
+// BroadcastJobClaimed broadcasts that a job was claimed by this node
+func (c *Cluster) BroadcastJobClaimed(todo *models.Todo) error {
+	event := JobEvent{
+		ExternID:  todo.ExternID,
+		TodoID:    todo.ID,
+		NodeID:    c.nodeID,
+		Status:    models.StatusClaimed,
+		Timestamp: time.Now().Unix(),
+	}
+	return c.broadcastJobEvent(EventJobClaimed, event)
+}
+
+// BroadcastJobStarted broadcasts that a job started processing
+func (c *Cluster) BroadcastJobStarted(todo *models.Todo) error {
+	event := JobEvent{
+		ExternID:  todo.ExternID,
+		TodoID:    todo.ID,
+		NodeID:    c.nodeID,
+		Status:    models.StatusProcessing,
+		Timestamp: time.Now().Unix(),
+	}
+	return c.broadcastJobEvent(EventJobStarted, event)
+}
+
+// BroadcastJobHeartbeat broadcasts a heartbeat for an active job
+func (c *Cluster) BroadcastJobHeartbeat(externID string) error {
+	event := JobEvent{
+		ExternID:  externID,
+		NodeID:    c.nodeID,
+		Status:    "heartbeat",
+		Timestamp: time.Now().Unix(),
+	}
+	return c.broadcastJobEvent(EventJobHeartbeat, event)
+}
+
+// BroadcastJobCompleted broadcasts that a job completed successfully
+func (c *Cluster) BroadcastJobCompleted(todo *models.Todo) error {
+	event := JobEvent{
+		ExternID:  todo.ExternID,
+		TodoID:    todo.ID,
+		NodeID:    c.nodeID,
+		Status:    models.StatusCompleted,
+		Timestamp: time.Now().Unix(),
+	}
+	return c.broadcastJobEvent(EventJobCompleted, event)
+}
+
+// BroadcastJobFailed broadcasts that a job failed
+func (c *Cluster) BroadcastJobFailed(todo *models.Todo) error {
+	event := JobEvent{
+		ExternID:  todo.ExternID,
+		TodoID:    todo.ID,
+		NodeID:    c.nodeID,
+		Status:    models.StatusFailed,
+		Timestamp: time.Now().Unix(),
+	}
+	return c.broadcastJobEvent(EventJobFailed, event)
+}
+
+// BroadcastJobReleased broadcasts that a job was released back to pending
+func (c *Cluster) BroadcastJobReleased(todo *models.Todo) error {
+	event := JobEvent{
+		ExternID:  todo.ExternID,
+		TodoID:    todo.ID,
+		NodeID:    c.nodeID,
+		Status:    models.StatusPending,
+		Timestamp: time.Now().Unix(),
+	}
+	return c.broadcastJobEvent(EventJobReleased, event)
 }

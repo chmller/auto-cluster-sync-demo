@@ -7,10 +7,21 @@ const (
 	EventTodoDeleted = "todo:deleted"
 )
 
+// Event types for job management
+const (
+	EventJobClaimed   = "job:claimed"
+	EventJobStarted   = "job:started"
+	EventJobHeartbeat = "job:heartbeat"
+	EventJobCompleted = "job:completed"
+	EventJobFailed    = "job:failed"
+	EventJobReleased  = "job:released"
+)
+
 // Query types for cluster communication
 const (
-	QueryFullState = "sync:full-state"
-	QueryCount     = "sync:count"
+	QueryFullState  = "sync:full-state"
+	QueryCount      = "sync:count"
+	QueryActiveLocks = "locks:active"
 )
 
 // TodoSyncEvent represents a todo synchronization event
@@ -27,4 +38,13 @@ type TodoSyncEvent struct {
 type CountResponse struct {
 	Count  int    `json:"count"`
 	NodeID string `json:"node_id"`
+}
+
+// JobEvent represents a job management event
+type JobEvent struct {
+	ExternID  string `json:"extern_id"`
+	TodoID    int    `json:"todo_id"`
+	NodeID    string `json:"node_id"`
+	Status    string `json:"status"`
+	Timestamp int64  `json:"timestamp"`
 }

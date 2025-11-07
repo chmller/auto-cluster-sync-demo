@@ -16,45 +16,74 @@ func (c *Cluster) handleQuery(query *serf.Query) {
 	case QueryCount:
 		c.handleCountQuery(query)
 	default:
-		log.Printf("Unknown query: %s", query.Name)
+		log.Printf("[WARN] Unknown query: %s", query.Name)
 	}
 }
 
-// handleFullStateQuery responds with all todos in the database
+// handleFullStateQuery broadcasts todos individually to avoid size limits
 func (c *Cluster) handleFullStateQuery(query *serf.Query) {
-	log.Printf("📤 Received full state query from %s", query.SourceNode())
+	log.Printf("[INFO] Received full state query from %s", query.SourceNode())
 
 	// Get all todos from database
 	todos, err := c.db.ListTodos()
 	if err != nil {
-		log.Printf("❌ Failed to list todos: %v", err)
+		log.Printf("[ERROR] Failed to list todos: %v", err)
 		return
 	}
 
-	// Marshal todos to JSON
-	data, err := json.Marshal(todos)
+	// Acknowledge the query with count only
+	countData := map[string]int{"count": len(todos)}
+	data, err := json.Marshal(countData)
 	if err != nil {
-		log.Printf("❌ Failed to marshal todos: %v", err)
+		log.Printf("[ERROR] Failed to marshal count: %v", err)
 		return
 	}
 
-	// Send response
 	if err := query.Respond(data); err != nil {
-		log.Printf("❌ Failed to respond to query: %v", err)
+		log.Printf("[ERROR] Failed to respond to query: %v", err)
 		return
 	}
 
-	log.Printf("✅ Sent %d todos to %s", len(todos), query.SourceNode())
+	log.Printf("[INFO] Acknowledged full state request from %s, will broadcast %d todos", query.SourceNode(), len(todos))
+
+	// Broadcast each todo individually via user events to avoid size limit
+	go func() {
+		for _, todo := range todos {
+			event := TodoSyncEvent{
+				Type:      "created",
+				ExternID:  todo.ExternID,
+				Todo:      todo.Todo,
+				Completed: &todo.Completed,
+				NodeID:    c.nodeID,
+				Timestamp: time.Now().Unix(),
+			}
+
+			payload, err := json.Marshal(event)
+			if err != nil {
+				log.Printf("[ERROR] Failed to marshal todo %s: %v", todo.ExternID, err)
+				continue
+			}
+
+			if err := c.serf.UserEvent(EventTodoCreated, payload, false); err != nil {
+				log.Printf("[ERROR] Failed to broadcast todo %s: %v", todo.ExternID, err)
+				continue
+			}
+
+			// Small delay to avoid overwhelming the network
+			time.Sleep(10 * time.Millisecond)
+		}
+		log.Printf("[INFO] Finished broadcasting %d todos to %s", len(todos), query.SourceNode())
+	}()
 }
 
 // handleCountQuery responds with the count of todos
 func (c *Cluster) handleCountQuery(query *serf.Query) {
-	log.Printf("📤 Received count query from %s", query.SourceNode())
+	log.Printf("[INFO] Received count query from %s", query.SourceNode())
 
 	// Count todos
 	count, err := c.db.CountTodos()
 	if err != nil {
-		log.Printf("❌ Failed to count todos: %v", err)
+		log.Printf("[ERROR] Failed to count todos: %v", err)
 		return
 	}
 
@@ -66,24 +95,24 @@ func (c *Cluster) handleCountQuery(query *serf.Query) {
 
 	data, err := json.Marshal(response)
 	if err != nil {
-		log.Printf("❌ Failed to marshal count response: %v", err)
+		log.Printf("[ERROR] Failed to marshal count response: %v", err)
 		return
 	}
 
 	// Send response
 	if err := query.Respond(data); err != nil {
-		log.Printf("❌ Failed to respond to query: %v", err)
+		log.Printf("[ERROR] Failed to respond to query: %v", err)
 		return
 	}
 
-	log.Printf("✅ Sent count (%d) to %s", count, query.SourceNode())
+	log.Printf("[INFO] Sent count (%d) to %s", count, query.SourceNode())
 }
 
 // requestFullSync requests full state from all nodes in the cluster
 func (c *Cluster) requestFullSync() {
 	defer c.markReady() // Always mark as ready when done, even on error
 
-	log.Println("🔄 Requesting full sync from cluster...")
+	log.Printf("[INFO] Requesting full sync from cluster...")
 
 	// Create query params
 	params := &serf.QueryParam{
@@ -95,58 +124,45 @@ func (c *Cluster) requestFullSync() {
 	// Send query
 	resp, err := c.serf.Query(QueryFullState, nil, params)
 	if err != nil {
-		log.Printf("❌ Failed to send full sync query: %v", err)
+		log.Printf("[ERROR] Failed to send full sync query: %v", err)
 		return
 	}
 
-	// Collect responses
-	seenExternIDs := make(map[string]bool)
-	totalSynced := 0
+	// Collect responses (now just acknowledgments with counts)
+	expectedCount := 0
+	respondingNodes := 0
 
 	for r := range resp.ResponseCh() {
-		var todos []struct {
-			ExternID  string `json:"extern_id"`
-			Todo      string `json:"todo"`
-			Completed bool   `json:"completed"`
-		}
-
-		if err := json.Unmarshal(r.Payload, &todos); err != nil {
-			log.Printf("❌ Failed to unmarshal response from %s: %v", r.From, err)
+		var countData map[string]int
+		if err := json.Unmarshal(r.Payload, &countData); err != nil {
+			log.Printf("[ERROR] Failed to unmarshal response from %s: %v", r.From, err)
 			continue
 		}
 
-		log.Printf("📦 Received %d todos from %s", len(todos), r.From)
-
-		for _, todo := range todos {
-			// Skip duplicates
-			if seenExternIDs[todo.ExternID] {
-				continue
-			}
-
-			// Check if todo already exists
-			existing, err := c.db.GetTodoByExternID(todo.ExternID)
-			if err != nil {
-				log.Printf("❌ Failed to check todo %s: %v", todo.ExternID, err)
-				continue
-			}
-
-			if existing != nil {
-				// Already exists, skip
-				seenExternIDs[todo.ExternID] = true
-				continue
-			}
-
-			// Create todo in local database
-			_, err = c.db.CreateTodo(todo.ExternID, todo.Todo)
-			if err != nil {
-				log.Printf("❌ Failed to sync todo %s: %v", todo.ExternID, err)
-				continue
-			}
-
-			seenExternIDs[todo.ExternID] = true
-			totalSynced++
-		}
+		count := countData["count"]
+		log.Printf("[INFO] Node %s will broadcast %d todos", r.From, count)
+		expectedCount += count
+		respondingNodes++
 	}
 
-	log.Printf("✅ Full sync complete: %d todos synced", totalSynced)
+	log.Printf("[INFO] Received acknowledgments from %d node(s), expecting ~%d todos via broadcast", respondingNodes, expectedCount)
+
+	// Wait a bit for broadcasts to arrive
+	// The actual syncing happens via handleTodoCreated events
+	if expectedCount > 0 {
+		waitTime := time.Duration(expectedCount/10+5) * time.Second // ~10 todos/sec + 5s buffer
+		if waitTime > 30*time.Second {
+			waitTime = 30 * time.Second
+		}
+		log.Printf("[INFO] Waiting %v for broadcasts to complete...", waitTime)
+		time.Sleep(waitTime)
+	}
+
+	// Check final count
+	finalCount, err := c.db.CountTodos()
+	if err != nil {
+		log.Printf("[ERROR] Failed to count synced todos: %v", err)
+	} else {
+		log.Printf("[INFO] Full sync complete: %d todos synced", finalCount)
+	}
 }

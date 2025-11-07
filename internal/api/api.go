@@ -266,12 +266,17 @@ func (s *Server) healthReady(ctx context.Context, input *struct{}) (*HealthReady
 
 type HealthInfoResponse struct {
 	Body struct {
-		NodeName     string                      `json:"node_name" doc:"Name of this node"`
-		Ready        bool                        `json:"ready" doc:"Whether the node is ready to serve requests"`
-		ClusterMode  bool                        `json:"cluster_mode" doc:"Whether clustering is enabled"`
-		MemberCount  int                         `json:"member_count" doc:"Number of cluster members"`
-		Members      []models.ClusterMemberInfo  `json:"members,omitempty" doc:"List of cluster members"`
-		TodoCount    int                         `json:"todo_count" doc:"Number of todos in local database"`
+		NodeName      string                      `json:"node_name" doc:"Name of this node"`
+		Ready         bool                        `json:"ready" doc:"Whether the node is ready to serve requests"`
+		ClusterMode   bool                        `json:"cluster_mode" doc:"Whether clustering is enabled"`
+		MemberCount   int                         `json:"member_count" doc:"Number of cluster members"`
+		Members       []models.ClusterMemberInfo  `json:"members,omitempty" doc:"List of cluster members"`
+		TodoCount     int                         `json:"todo_count" doc:"Number of todos in local database"`
+		JobsPending   int                         `json:"jobs_pending" doc:"Number of pending jobs"`
+		JobsClaimed   int                         `json:"jobs_claimed" doc:"Number of claimed jobs"`
+		JobsProcessing int                        `json:"jobs_processing" doc:"Number of jobs being processed"`
+		JobsCompleted int                         `json:"jobs_completed" doc:"Number of completed jobs"`
+		JobsFailed    int                         `json:"jobs_failed" doc:"Number of failed jobs"`
 	}
 }
 
@@ -284,6 +289,19 @@ func (s *Server) healthInfo(ctx context.Context, input *struct{}) (*HealthInfoRe
 		todoCount = -1 // Indicate error
 	}
 	resp.Body.TodoCount = todoCount
+
+	// Get job statistics
+	jobsPending, _ := s.db.CountJobsByStatus(models.StatusPending)
+	jobsClaimed, _ := s.db.CountJobsByStatus(models.StatusClaimed)
+	jobsProcessing, _ := s.db.CountJobsByStatus(models.StatusProcessing)
+	jobsCompleted, _ := s.db.CountJobsByStatus(models.StatusCompleted)
+	jobsFailed, _ := s.db.CountJobsByStatus(models.StatusFailed)
+
+	resp.Body.JobsPending = jobsPending
+	resp.Body.JobsClaimed = jobsClaimed
+	resp.Body.JobsProcessing = jobsProcessing
+	resp.Body.JobsCompleted = jobsCompleted
+	resp.Body.JobsFailed = jobsFailed
 
 	if s.cluster == nil {
 		// Standalone mode
